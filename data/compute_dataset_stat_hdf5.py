@@ -10,6 +10,8 @@ import numpy as np
 from tqdm import tqdm
 
 from data.hdf5_vla_dataset import HDF5VLADataset
+from data.egodex_vla_dataset import EgoDexVLADataset
+from data.bson_vla_dataset import BsonVLADataset
 
 
 def process_hdf5_dataset(vla_dataset):
@@ -78,7 +80,9 @@ if __name__ == "__main__":
                         help="Whether to skip the existing dataset statistics.")
     args = parser.parse_args()
     
-    vla_dataset = HDF5VLADataset()
+    # vla_dataset = HDF5VLADataset()
+    # vla_dataset = EgoDexVLADataset()
+    vla_dataset = BsonVLADataset()
     dataset_name = vla_dataset.get_dataset_name()
     
     try:

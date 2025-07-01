@@ -1,0 +1,17 @@
+conda activate /share/project/cwm/zongzheng.zhang/envs/rdt
+
+python -m data.compute_dataset_stat_hdf5
+
+./train_egodex.sh
+
+原始行为：预训练时，data/producer.py调用data/vla_dataset.py的VLADataset实例化data中的多种dataset，生成buffer存放在硬盘上，train/dataset.py中的VLAConsumerDataset的use_hdf5=False，从硬盘上的buffer读取数据供训练。微调时，VLAConsumerDataset的use_hdf5=True，从h5加载微调数据集。
+由于我们只用egodex预训练，修改了VLAConsumerDataset从EgoDexVLADataset或BsonVLADataset加载数据分别用于预训练和微调。
+
+TODO:
+性能问题
+ours: 3it/s
+egodex: 3s/it
+
+处理变化的bson额外相机序号
+
+把egodex关键点retargeting到我们的手上

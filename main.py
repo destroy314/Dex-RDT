@@ -42,12 +42,11 @@ def parse_args(input_args=None):
 
     parser.add_argument(
         "--load_from_hdf5",
-        action="store_true",
-        default=False,
+        type=str,
+        default="hdf5",
+        choices=["hdf5", "bson", "egodex"],
         help=(
-            "Whether to load the dataset directly from HDF5 files. "
-            "If False, the dataset will be loaded using producer-consumer pattern, "
-            "where the producer reads TFRecords and saves them to buffer, and the consumer reads from buffer."
+            "Type of dataset to load. "
         )
     )
     parser.add_argument(

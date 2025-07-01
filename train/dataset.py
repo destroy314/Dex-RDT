@@ -15,6 +15,8 @@ import transformers
 
 from data.filelock import FileLock
 from data.hdf5_vla_dataset import HDF5VLADataset
+from data.bson_vla_dataset import BsonVLADataset
+from data.egodex_vla_dataset import EgoDexVLADataset
 from train.image_corrupt import image_corrupt
 
 
@@ -93,7 +95,7 @@ class VLAConsumerDataset(Dataset):
         cond_mask_prob=0.1,
         cam_ext_mask_prob=-1.0,
         state_noise_snr=None,
-        use_hdf5=False,
+        use_hdf5="hdf5",
         use_precomp_lang_embed=False
     ):
         super(VLAConsumerDataset, self).__init__()
@@ -124,8 +126,12 @@ class VLAConsumerDataset(Dataset):
         self.cam_ext_mask_prob = cam_ext_mask_prob
         self.use_hdf5 = use_hdf5
         self.hdf5_dataset = None
-        if use_hdf5:
+        if use_hdf5 == "hdf5":
             self.hdf5_dataset = HDF5VLADataset()
+        elif use_hdf5 == "bson":
+            self.hdf5_dataset = BsonVLADataset()
+        elif use_hdf5 == "egodex":
+            self.hdf5_dataset = EgoDexVLADataset()
         self.use_precomp_lang_embed = use_precomp_lang_embed
         if use_precomp_lang_embed:
             self.empty_lang_embed = torch.load("data/empty_lang_embed.pt")
@@ -252,6 +258,7 @@ class VLAConsumerDataset(Dataset):
                         res['cam_high'], res['cam_high_mask'],
                         res['cam_right_wrist'], res['cam_right_wrist_mask'],
                         res['cam_left_wrist'], res['cam_left_wrist_mask'],
+                        res['cam_third_view'], res['cam_third_view_mask'],
                     ]
                     state_std = res['state_std']
                     state_mean = res['state_mean']
@@ -386,6 +393,7 @@ class VLAConsumerDataset(Dataset):
                 traceback.print_exc()
                 # Try incresing the index
                 index = (index + 1) % len(self)
+                # raise
 
 
 class DataCollatorForVLAConsumerDataset(object):
