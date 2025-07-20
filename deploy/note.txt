@@ -1,0 +1,10 @@
+cd Dex-RDT
+
+conda activate xhand_tele_env
+python deploy/xhand_forwarder.py
+
+conda activate imitall
+python deploy/mmk_forwarder.py
+
+conda activate rdt
+python deploy/rdt_inference_zmq.py --pretrained-model-path checkpoints/checkpoint-60000 --lang-embeddings-path outs/action4.pt
