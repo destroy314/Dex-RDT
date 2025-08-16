@@ -19,6 +19,48 @@ import zmq
 # from xhand_tele_ops import XHandTeleOps
 
 
+# Joint limits (radians) per joint index 0..11 based on the provided spec image
+# Mapping assumption:
+# 0: thumb_bend_joint           [0, 105°]
+# 1: thumb_rota_joint1          [-40°, 90°]
+# 2: thumb_rota_joint2          [0, 90°]
+# 3: index_bend_joint           [-10°, 10°]
+# 4: index_joint1               [0, 110°]
+# 5: index_joint2               [0, 110°]
+# 6: mid_joint1                 [0, 110°]
+# 7: mid_joint2                 [0, 110°]
+# 8: ring_joint1                [0, 110°]
+# 9: ring_joint2                [0, 110°]
+# 10: pinky_joint1              [0, 110°]
+# 11: pinky_joint2              [0, 110°]
+JOINT_LIMITS_RAD = [
+    (0.0, 1.832595715),     # 105°
+    (-0.698131701, 1.570796327),  # -40° ~ 90°
+    (0.0, 1.570796327),     # 90°
+    (-0.174532925, 0.174532925),  # -10° ~ 10°
+    (0.0, 1.919862177),
+    (0.0, 1.919862177),
+    (0.0, 1.919862177),
+    (0.0, 1.919862177),
+    (0.0, 1.919862177),
+    (0.0, 1.919862177),
+    (0.0, 1.919862177),
+    (0.0, 1.919862177),
+]
+
+
+def _clamp_hand_action(hand_action):
+    """Clamp a 12-DoF hand action (radians) to JOINT_LIMITS_RAD.
+    Pads/truncates to 12 dims if needed and logs a warning.
+    Returns a list of 12 floats.
+    """
+    arr = np.asarray(hand_action, dtype=np.float32)
+    mins = np.array([mn for mn, _ in JOINT_LIMITS_RAD], dtype=np.float32)
+    maxs = np.array([mx for _, mx in JOINT_LIMITS_RAD], dtype=np.float32)
+    clipped = np.clip(arr, mins, maxs)
+    return clipped.tolist()
+
+
 class XHandForwarder:
     """ZMQ forwarder for XHand communication"""
     
@@ -81,6 +123,10 @@ class XHandForwarder:
             left_hand_action = action_data.get('left_hand', [0.0] * 12)
             right_hand_action = action_data.get('right_hand', [0.0] * 12)
             
+            # Clamp actions to safe joint limits (radians)
+            left_hand_action = _clamp_hand_action(left_hand_action)
+            right_hand_action = _clamp_hand_action(right_hand_action)
+
             # Prepare data for xhand controller
             transform_data = {
                 "left_hand": left_hand_action,

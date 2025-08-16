@@ -17,6 +17,7 @@ from data.filelock import FileLock
 from data.hdf5_vla_dataset import HDF5VLADataset
 from data.bson_vla_dataset import BsonVLADataset
 from data.egodex_vla_dataset import EgoDexVLADataset
+from data.lerobot_vla_dataset import LeRobotVLADataset
 from train.image_corrupt import image_corrupt
 
 
@@ -132,6 +133,10 @@ class VLAConsumerDataset(Dataset):
             self.hdf5_dataset = BsonVLADataset()
         elif use_hdf5 == "egodex":
             self.hdf5_dataset = EgoDexVLADataset()
+        elif use_hdf5 == "lerobot":
+            self.hdf5_dataset = LeRobotVLADataset()
+        else:
+            raise ValueError(f"Unknown use_hdf5: {use_hdf5}")
         self.use_precomp_lang_embed = use_precomp_lang_embed
         if use_precomp_lang_embed:
             self.empty_lang_embed = torch.load("data/empty_lang_embed.pt")

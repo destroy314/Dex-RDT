@@ -8,3 +8,8 @@ python deploy/mmk_forwarder.py
 
 conda activate rdt
 python deploy/rdt_inference_zmq.py --pretrained-model-path checkpoints/checkpoint-60000 --lang-embeddings-path outs/action4.pt
+python deploy/rdt_inference_zmq.py \
+  --pretrained-model-path checkpoints/dexrdt-400m-v3/checkpoint-95000 \
+  --lang-embeddings-path outs/action4.pt \
+  --normalize-mode min_max \
+  --stats-file bson_stats/dataset_statistics.json

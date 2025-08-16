@@ -13,6 +13,7 @@ import yaml
 import base64
 from collections import deque
 import logging
+import json
 
 import numpy as np
 import torch
@@ -33,6 +34,11 @@ observation_window = None
 lang_embeddings = None
 device = 'cuda'
 dtype = torch.bfloat16
+
+# Normalization globals
+normalize_mode = 'min_max'
+norm_stats = None
+norm_tensors = {}
 
 
 class ZMQRobotInterface:
@@ -230,6 +236,76 @@ def set_seed(seed):
     np.random.seed(seed)
 
 
+def load_normalization(stats_file: str, mode: str = 'min_max'):
+    """Load normalization statistics and prepare tensors on device.
+
+    Args:
+        stats_file: Path to dataset_statistics.json
+        mode: 'none' | 'mean_std' | 'min_max'
+    """
+    global normalize_mode, norm_stats, norm_tensors, device, dtype
+    normalize_mode = mode
+    norm_tensors = {}
+
+    if mode == 'none':
+        logging.info("Normalization disabled (mode=none)")
+        return
+
+    try:
+        with open(stats_file, 'r') as f:
+            norm_stats = json.load(f)
+        logging.info(f"Loaded normalization stats from {stats_file}")
+    except Exception as e:
+        logging.warning(f"Failed to load stats from {stats_file}: {e}. Falling back to no normalization.")
+        normalize_mode = 'none'
+        return
+
+    # Prepare per-type tensors on device
+    for key in ['state', 'action']:
+        data = norm_stats.get(key, None)
+        if data is None:
+            continue
+        if mode == 'mean_std':
+            mean = torch.tensor(data['mean'], device=device, dtype=dtype)
+            std = torch.tensor(data['std'], device=device, dtype=dtype)
+            std = torch.where(std == 0, torch.ones_like(std), std)
+            norm_tensors[key] = {'mean': mean, 'std': std}
+        elif mode == 'min_max':
+            min_val = torch.tensor(data['percentile_1'], device=device, dtype=dtype)
+            max_val = torch.tensor(data['percentile_99'], device=device, dtype=dtype)
+            range_val = max_val - min_val
+            range_val = torch.where(range_val == 0, torch.ones_like(range_val), range_val)
+            norm_tensors[key] = {'min': min_val, 'max': max_val, 'range': range_val}
+
+
+def normalize_vector(x: torch.Tensor, key: str) -> torch.Tensor:
+    """Normalize a vector/tensor along the last dimension using loaded stats for given key.
+
+    x: torch tensor with last dim == dim size (e.g., [D], [B,D], [T,D], ...)
+    key: 'state' or 'action'
+    """
+    if normalize_mode == 'none' or key not in norm_tensors:
+        return x
+    stats = norm_tensors[key]
+    if normalize_mode == 'mean_std':
+        return (x - stats['mean']) / stats['std']
+    elif normalize_mode == 'min_max':
+        return (x - stats['min']) / stats['range']
+    return x
+
+
+def denormalize_vector(x: torch.Tensor, key: str) -> torch.Tensor:
+    """Inverse of normalize_vector for the given key."""
+    if normalize_mode == 'none' or key not in norm_tensors:
+        return x
+    stats = norm_tensors[key]
+    if normalize_mode == 'mean_std':
+        return x * stats['std'] + stats['mean']
+    elif normalize_mode == 'min_max':
+        return x * stats['range'] + stats['min']
+    return x
+
+
 def create_model(config, pretrained):
     """Initialize the RDT model directly from pretrained checkpoint"""
     global device, dtype
@@ -412,9 +488,10 @@ def inference_fn(config, policy, vision_encoder, image_processor):
     image_embeds = vision_encoder(image_tensor).detach()
     image_embeds = image_embeds.reshape(-1, vision_encoder.hidden_size).unsqueeze(0)
     
-    # Get proprioception
-    proprio = observation_window[-1]['qpos']
-    proprio = proprio.unsqueeze(0).unsqueeze(0).to(device, dtype=dtype)
+    # Get proprioception (normalize to match training)
+    proprio = observation_window[-1]['qpos'].to(device, dtype=dtype)
+    proprio = normalize_vector(proprio, 'state')
+    proprio = proprio.unsqueeze(0).unsqueeze(0)
     
     # Setup action mask
     action_mask = torch.ones(1, 1, config['state_dim'], device=device, dtype=dtype)
@@ -434,6 +511,8 @@ def inference_fn(config, policy, vision_encoder, image_processor):
             action_mask=action_mask,
             ctrl_freqs=ctrl_freq
         )
+        # Denormalize actions back to robot space
+        actions = denormalize_vector(actions, 'action')
     
     return actions.squeeze(0).to(torch.float).cpu().numpy()
 
@@ -556,6 +635,12 @@ def get_args():
     parser.add_argument("--lang-embeddings-path", type=str, default=None,
                         help="Path to pre-computed language embeddings")
     
+    # Normalization configuration
+    parser.add_argument("--normalize-mode", type=str, default="min_max", choices=["none", "mean_std", "min_max"],
+                        help="Normalization mode for qpos/action, should match training")
+    parser.add_argument("--stats-file", type=str, default="bson_stats/dataset_statistics.json",
+                        help="Path to dataset statistics JSON used for normalization")
+    
     # ZMQ configuration
     parser.add_argument("--mmk-host", type=str, default="localhost",
                         help="MMK forwarder host")
@@ -583,6 +668,9 @@ def main():
     
     # Set random seed
     set_seed(config["seed"])
+    
+    # Load normalization (must match training dataset)
+    load_normalization(args.stats_file, args.normalize_mode)
     
     # Create RDT model
     logging.info("Creating RDT model...")

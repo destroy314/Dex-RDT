@@ -10,6 +10,10 @@ from typing import List, Dict, Tuple, Optional
 from PIL import Image
 import re
 import pathlib
+import argparse
+import json
+import matplotlib.pyplot as plt
+from datetime import datetime
 
 class EpisodeInfo:
     """Custom class to store episode path and action text"""
@@ -31,19 +35,37 @@ class BsonVLADataset:
     - Separate xhand_control_data.bson for dexterous hand data
     - Image file sequences from multiple cameras
     """
-    def __init__(self, bson_dir: str="data/ours", sub_sample=1.0) -> None:
+    def __init__(self, bson_dir: str="data/ours", sub_sample=1.0, 
+                #  normalize_mode: str=None, stats_file: str=None) -> None:
+                 normalize_mode: str="min_max", stats_file: str="bson_stats/dataset_statistics.json") -> None:
         """
         Initializes the BsonVLADataset.
 
         Args:
             bson_dir (str): The path to the dataset directory containing episode folders.
             sub_sample (float): The fraction of the dataset to use.
+            normalize_mode (str): Normalization mode - 'mean_std' or 'min_max' or None.
+            stats_file (str): Path to dataset_statistics.json file for normalization.
         """
         self.DATASET_NAME = "ours"
         
-        self.ext_image_keys = ["camera_0", "camera_3", "camera_8"]
-        self.ext_image_names = ["cam_left_wrist", "cam_third_view", "cam_right_wrist"]
-        self.image_keys = ["head_camera"] + self.ext_image_keys
+        # Normalization settings
+        self.normalize_mode = normalize_mode
+        self.stats = None
+        if normalize_mode and stats_file:
+            self._load_statistics(stats_file)
+        
+        # Camera configurations will be determined per episode
+        # 3 cameras: 0,2,6 or 2,4,6 (left_hand, external, right_hand) + head in BSON
+        # 4 cameras: 0,4,6,11 (head, external, right_hand, left_hand)
+        self.valid_3cam_config_1 = [0, 2, 6]  # left_hand, external, right_hand
+        self.valid_3cam_config_2 = [2, 4, 6]  # left_hand, external, right_hand
+        self.valid_4cam_config = [0, 4, 6, 11]  # head, external, right_hand, left_hand
+        
+        # These will be set per episode based on actual camera configuration
+        self.ext_image_keys = []
+        self.ext_image_names = []
+        self.image_keys = []
 
         print("Finding episode directories...")
         self.episode_infos: list[EpisodeInfo] = []
@@ -59,22 +81,27 @@ class BsonVLADataset:
                         action_text = f.read().strip()
                 else:
                     print(f"Warning: Missing action.txt in {action_path}")
-                    action_text = ""
+                    continue
                 
                 # Look for episode subdirectories within each action directory
                 for episode_item in os.listdir(action_path):
-                    episode_info = os.path.join(action_path, episode_item)
-                    if os.path.isdir(episode_info) and episode_item.startswith('episode'):
+                    episode_path = os.path.join(action_path, episode_item)
+                    if os.path.isdir(episode_path) and episode_item.startswith('episode'):
                         # Check if required files exist in the episode subdirectory
-                        main_bson = os.path.join(episode_info, "episode_0.bson")
-                        xhand_bson = os.path.join(episode_info, "xhand_control_data.bson")
+                        main_bson = os.path.join(episode_path, "episode_0.bson")
+                        xhand_bson = os.path.join(episode_path, "xhand_control_data.bson")
                         
+                        # Validate camera configuration
                         if os.path.exists(main_bson) and os.path.exists(xhand_bson):
-                            # Store episode info with action text
-                            episode_info = EpisodeInfo(episode_info, action_text)
-                            self.episode_infos.append(episode_info)
+                            camera_config = self._validate_camera_config(episode_path)
+                            if camera_config is not None:
+                                # Store episode info with action text
+                                episode_info = EpisodeInfo(episode_path, action_text)
+                                self.episode_infos.append(episode_info)
+                            else:
+                                print(f"Warning: Invalid camera configuration in {episode_path}")
                         else:
-                            print(f"Warning: Missing required files in {episode_info}")
+                            print(f"Warning: Missing required BSON files in {episode_path}")
         
         # Sort by episode path for consistency
         self.episode_infos.sort(key=lambda x: x.path)
@@ -124,6 +151,63 @@ class BsonVLADataset:
              
         self.episode_sample_weights = np.array(episode_lens) / np.sum(episode_lens)
         print("Dataset initialized.")
+    
+    def __len__(self):
+        return len(self.episode_infos)
+
+    def _validate_camera_config(self, episode_path: str) -> Optional[Dict]:
+        """
+        Validates camera configuration for an episode.
+        Returns camera configuration dict if valid, None otherwise.
+        
+        Valid configurations:
+        - 3 cameras: 0,2,6 (left_hand, external, right_hand) + head in BSON
+        - 4 cameras: 0,4,6,11 (head, external, right_hand, left_hand)
+        """
+        # Find all camera_* directories
+        camera_dirs = []
+        for item in os.listdir(episode_path):
+            if item.startswith('camera_') and os.path.isdir(os.path.join(episode_path, item)):
+                try:
+                    cam_num = int(item.split('_')[1])
+                    camera_dirs.append(cam_num)
+                except ValueError:
+                    continue
+        
+        camera_dirs.sort()
+        
+        # Validate against known configurations
+        if camera_dirs == self.valid_3cam_config_1:
+            # 3 cameras: 0,2,6 (left_hand, external, right_hand)
+            return {
+                'type': '3cam',
+                'cameras': camera_dirs,
+                'ext_image_keys': [f'camera_{i}' for i in camera_dirs],
+                'ext_image_names': ['cam_left_wrist', 'cam_third_view', 'cam_right_wrist'],
+                'has_head_in_bson': True
+            }
+        elif camera_dirs == self.valid_3cam_config_2:
+            # 3 cameras: 2,4,6 (left_hand, external, right_hand)
+            return {
+                'type': '3cam',
+                'cameras': camera_dirs,
+                'ext_image_keys': [f'camera_{i}' for i in camera_dirs],
+                'ext_image_names': ['cam_left_wrist', 'cam_third_view', 'cam_right_wrist'],
+                'has_head_in_bson': True
+            }
+        elif camera_dirs == self.valid_4cam_config:
+            # 4 cameras: 0,4,6,11 (head, external, right_hand, left_hand)
+            return {
+                'type': '4cam',
+                'cameras': camera_dirs,
+                'ext_image_keys': [f'camera_{i}' for i in camera_dirs],
+                'ext_image_names': ['cam_head', 'cam_third_view', 'cam_right_wrist', 'cam_left_wrist'],
+                'has_head_in_bson': False
+            }
+        else:
+            # Invalid configuration
+            print(f"Invalid camera configuration in {episode_path}: found cameras {camera_dirs}")
+            return None
 
     def __len__(self):
         return len(self.episode_infos)
@@ -131,7 +215,7 @@ class BsonVLADataset:
     def get_dataset_name(self):
         return self.DATASET_NAME
     
-    def get_item(self, index: int=None, state_only=False):
+    def get_item(self, index: int=None, state_only=False, action_only=False):
         """
         Get a training sample.
 
@@ -150,6 +234,7 @@ class BsonVLADataset:
                 episode_info = self.episode_infos[index]
 
             parser = self.parse_episode if not state_only else self.parse_episode_state_only
+            parser = self.parse_episode_action if action_only else parser
             valid, sample = parser(episode_info)
             
             if valid:
@@ -195,8 +280,8 @@ class BsonVLADataset:
         keys = {
             "left_obs_arm": "/observation/left_arm/joint_state",
             "right_obs_arm": "/observation/right_arm/joint_state",
-            # "left_act_arm": "/action/left_arm/joint_state",
-            # "right_act_arm": "/action/right_arm/joint_state",
+            "left_act_arm": "/action/left_arm/joint_state",
+            "right_act_arm": "/action/right_arm/joint_state",
         }
 
         # Check frame counts
@@ -213,6 +298,19 @@ class BsonVLADataset:
         state = np.zeros((frame_num, 2 * (arm_dim + eef_dim)), dtype=np.float32)
         action = np.zeros((frame_num, 2 * (arm_dim + eef_dim)), dtype=np.float32)
         
+        # Check if action data has correct length (6) for arms
+        use_arm_actions = True
+        try:
+            # Check first frame to determine if action data is valid
+            left_arm_action = main_bson_content[keys["left_act_arm"]][0]["data"]["pos"]
+            right_arm_action = main_bson_content[keys["right_act_arm"]][0]["data"]["pos"]
+            if len(left_arm_action) != arm_dim or len(right_arm_action) != arm_dim:
+                use_arm_actions = False
+                # print(f"Warning: Action data has incorrect length (left: {len(left_arm_action)}, right: {len(right_arm_action)}), using observation as action")
+        except (KeyError, IndexError):
+            use_arm_actions = False
+            # print("Warning: Action data not available, using observation as action")
+        
         for i in range(frame_num):
             state[i, :] = np.concatenate([
                 main_bson_content[keys["left_obs_arm"]][i]["data"]["pos"],
@@ -220,23 +318,43 @@ class BsonVLADataset:
                 main_bson_content[keys["right_obs_arm"]][i]["data"]["pos"],
                 xhand_data['frames'][i]["observation"]["right_hand"]
             ])
-            # As per requirement: use observation as action for arms
+            
+            # Use action data if available and correct, otherwise use observation
+            if use_arm_actions:
+                # print("Using action data for arms")
+                left_arm_data = main_bson_content[keys["left_act_arm"]][i]["data"]["pos"]
+                right_arm_data = main_bson_content[keys["right_act_arm"]][i]["data"]["pos"]
+            else:
+                left_arm_data = main_bson_content[keys["left_obs_arm"]][i]["data"]["pos"]
+                right_arm_data = main_bson_content[keys["right_obs_arm"]][i]["data"]["pos"]
+                
             action[i, :] = np.concatenate([
-                main_bson_content[keys["left_obs_arm"]][i]["data"]["pos"], # TODO use obs as act for now
+                left_arm_data,
                 xhand_data['frames'][i]["action"]["left_hand"],
-                main_bson_content[keys["right_obs_arm"]][i]["data"]["pos"],
+                right_arm_data,
                 xhand_data['frames'][i]["action"]["right_hand"]
             ])
         
-        # TODO not used?
-        # Extract image data info
+        # Get camera configuration for this episode
+        camera_config = self._validate_camera_config(path)
+        if camera_config is None:
+            print(f"Invalid camera configuration for episode {path}")
+            return None
+        
+        # Extract image data info based on camera configuration
         images_info = {}
         
-        # Head camera from BSON (original video stream)
-        images_info['head_camera'] = main_bson_content.get("/images/head_camera")
+        # Head camera handling
+        if camera_config['has_head_in_bson']:
+            # For 3-camera config, head is in BSON
+            if "/images/head_camera" in main_bson_content:
+                images_info['head_camera'] = main_bson_content["/images/head_camera"]
+            else:
+                print(f"Warning: head_camera not found in BSON for episode {path}")
+                images_info['head_camera'] = None
         
         # USB cameras from img files
-        for cam in self.ext_image_keys:
+        for cam in camera_config['ext_image_keys']:
             cam_path = os.path.join(path, cam)
             if os.path.exists(cam_path):
                 # Get list of img files
@@ -255,6 +373,7 @@ class BsonVLADataset:
             "images_info": images_info,
             "episode_len": frame_num,
             "episode_path": path,
+            "camera_config": camera_config,
         }
 
     def _get_decoded_video(self, episode_info, image_key: str, raw_bytes: bytes) -> np.ndarray:
@@ -265,6 +384,7 @@ class BsonVLADataset:
 
         frames = []
         if raw_bytes is None or len(raw_bytes) == 0:
+            print(f"Warning: Empty or None raw_bytes for video decoding (episode {episode_info}, key {image_key})")
             decoded_frames = np.array([])
         else:
             try:
@@ -272,17 +392,24 @@ class BsonVLADataset:
                 container = av.open(in_buffer)
                 for frame in container.decode(video=0):
                     frames.append(frame.to_ndarray(format="rgb24"))
-                decoded_frames = np.stack(frames) if frames else np.array([])
+                if frames:
+                    decoded_frames = np.stack(frames)
+                else:
+                    print(f"Warning: No frames decoded from video (episode {episode_info}, key {image_key})")
+                    decoded_frames = np.array([])
             except Exception as e:
                 print(f"Warning: Failed to decode video (path {episode_info}, key {image_key}). Error: {e}")
                 decoded_frames = np.array([])
+            finally:
+                container.close()
         
-        self._video_cache[cache_key] = decoded_frames
+        #self._video_cache[cache_key] = decoded_frames
         return decoded_frames
 
     def _load_file_sequence(self, cam_info: Dict, start_idx: int, end_idx: int) -> np.ndarray:
         """Load a sequence of img images."""
         if cam_info is None or cam_info['type'] != 'file_sequence':
+            print(f"Warning: Invalid cam_info in _load_file_sequence: {cam_info}")
             return np.array([])
         
         frames = []
@@ -297,18 +424,23 @@ class BsonVLADataset:
             else:
                 img_path = os.path.join(cam_path, files[i])
                 try:
-                    img = Image.open(img_path)
-                    img_array = np.array(img)
+                    with Image.open(img_path) as img:
+                        img_array = np.array(img)
                     if img_array.ndim == 2:  # Grayscale to RGB
                         img_array = np.stack([img_array] * 3, axis=-1)
-                    self._image_cache[cache_key] = img_array
+                    # if len(self._image_cache) < 20_000:
+                    #     self._image_cache[cache_key] = img_array
                 except Exception as e:
                     print(f"Warning: Failed to load image {img_path}. Error: {e}")
                     img_array = np.zeros((480, 640, 3), dtype=np.uint8)  # Default size
             
             frames.append(img_array)
         
-        return np.stack(frames) if frames else np.array([])
+        if frames:
+            return np.stack(frames)
+        else:
+            print(f"Warning: No frames loaded in _load_file_sequence for path {cam_info.get('path', 'unknown')}")
+            return np.array([])
 
     def parse_episode(self, episode_info):
         """
@@ -366,25 +498,29 @@ class BsonVLADataset:
             if key == 'head_camera':
                 # Original video decoding for head camera
                 if img_info is None:
-                    return np.zeros((self.IMG_HISTORY_SIZE, 0, 0, 0))
+                    print(f"Warning: head_camera not found in BSON for episode {episode_info}")
+                    return np.zeros((self.IMG_HISTORY_SIZE, 480, 640, 3))
                 
                 video_frames = self._get_decoded_video(episode_info, key, img_info)
                 
                 if video_frames.ndim != 4:  # If decoding failed or empty
-                    return np.zeros((self.IMG_HISTORY_SIZE, 0, 0, 0))
+                    print(f"Warning: decoded video for {key} is empty")
+                    return np.zeros((self.IMG_HISTORY_SIZE, 480, 640, 3))
                 
                 # Get image history
                 start_idx = max(step_id - self.IMG_HISTORY_SIZE + 1, 0)
                 imgs = video_frames[start_idx : step_id + 1]
             else:
                 if img_info is None:
-                    return np.zeros((self.IMG_HISTORY_SIZE, 0, 0, 0))
+                    print(f"Warning: {key} not found in file for episode {episode_info}")
+                    return np.zeros((self.IMG_HISTORY_SIZE, 480, 640, 3))
                 
                 start_idx = max(step_id - self.IMG_HISTORY_SIZE + 1, 0)
                 imgs = self._load_file_sequence(img_info, start_idx, step_id + 1)
                 
-                if imgs.ndim != 4:  # If loading failed
-                    return np.zeros((self.IMG_HISTORY_SIZE, 0, 0, 0))
+                if imgs.ndim != 4 or imgs.shape[0] == 0:  # If loading failed or empty
+                    print(f"Warning: Failed to load file sequence for {key} in episode {episode_info}")
+                    return np.zeros((self.IMG_HISTORY_SIZE, 480, 640, 3))
             
             # Pad images if history is not full
             if imgs.shape[0] < self.IMG_HISTORY_SIZE:
@@ -393,8 +529,14 @@ class BsonVLADataset:
 
             return imgs
         
-        # Load all cameras
-        cam_high = parse_img('head_camera')
+        # Load head camera based on configuration
+        camera_config = episode_data["camera_config"]
+        if camera_config['has_head_in_bson']:
+            # For 3-camera config, head is in BSON
+            cam_high = parse_img('head_camera')
+        else:
+            # For 4-camera config, head is camera_0
+            cam_high = parse_img('camera_0')
         
         # Create masks
         valid_len = min(step_id - (first_idx - 1) + 1, self.IMG_HISTORY_SIZE)
@@ -402,6 +544,11 @@ class BsonVLADataset:
             [False] * (self.IMG_HISTORY_SIZE - valid_len) + [True] * valid_len
         )
 
+        # Apply normalization if enabled
+        if self.normalize_mode:
+            state = self._normalize_data(state, 'state')
+            actions = self._normalize_data(actions, 'action')
+        
         sample = {
             "meta": meta,
             "state": state,
@@ -414,10 +561,51 @@ class BsonVLADataset:
             "cam_high_mask": cam_mask,
         }
         
-        # Add external cameras
-        for key, name in zip(self.ext_image_keys, self.ext_image_names):
+        # Add external cameras based on episode camera configuration
+        camera_config = episode_data["camera_config"]
+        for key, name in zip(camera_config['ext_image_keys'], camera_config['ext_image_names']):
+            # Skip camera_0 for 4-camera config since it's already processed as cam_high
+            if not camera_config['has_head_in_bson'] and key == 'camera_0':
+                continue
             sample[name] = parse_img(key)
             sample[name + '_mask'] = cam_mask
+        
+        return True, sample
+    
+    def parse_episode_action(self, episode_info):
+        """only return a random action chunk"""
+        episode_data = self._extract_data_from_episode(episode_info)
+        if not episode_data:
+            return False, None
+
+        qpos = episode_data["state"]
+        num_steps = episode_data["episode_len"]
+
+        if num_steps < self.CHUNK_SIZE:  # Drop too-short episodes
+            return False, None
+        
+        # Skip the first few still steps
+        EPS = 1e-2
+        qpos_delta = np.abs(qpos - qpos[0:1])
+        indices = np.where(np.any(qpos_delta > EPS, axis=1))[0]
+        first_idx = indices[0] if len(indices) > 0 else 1
+        
+        if first_idx >= num_steps:  # case where robot doesn't move
+            return False, None
+
+        # Randomly sample a timestep
+        step_id = np.random.randint(first_idx - 1, num_steps)
+        
+        actions_full = episode_data["action"]
+        target_qpos = actions_full[step_id : step_id + self.CHUNK_SIZE]
+        actions = target_qpos
+
+        if actions.shape[0] < self.CHUNK_SIZE:
+            actions = np.pad(actions, ((0, self.CHUNK_SIZE - actions.shape[0]), (0, 0)), 'edge')
+
+        sample = {
+            "actions": actions,
+        }
         
         return True, sample
 
@@ -448,16 +636,306 @@ class BsonVLADataset:
         state_traj = qpos[first_idx-1:]
         action_traj = actions[first_idx-1:]
         
+        # Apply normalization if enabled
+        if self.normalize_mode:
+            state_traj = self._normalize_data(state_traj, 'state')
+            action_traj = self._normalize_data(action_traj, 'action')
+        
         return True, {
             "state": state_traj,
             "action": action_traj
         }
+    
+    def _load_statistics(self, stats_file: str):
+        """
+        Load statistics from JSON file for normalization.
+        
+        Args:
+            stats_file (str): Path to dataset_statistics.json file
+        """
+        try:
+            with open(stats_file, 'r') as f:
+                self.stats = json.load(f)
+            print(f"Loaded statistics from {stats_file}")
+            print(f"State dim: {len(self.stats['state']['mean'])}, Action dim: {len(self.stats['action']['mean'])}")
+        except Exception as e:
+            print(f"Warning: Failed to load statistics from {stats_file}: {e}")
+            self.stats = None
+    
+    def _normalize_data(self, data: np.ndarray, data_type: str) -> np.ndarray:
+        """
+        Normalize data using loaded statistics.
+        
+        Args:
+            data (np.ndarray): Data to normalize (state or action)
+            data_type (str): 'state' or 'action'
+            
+        Returns:
+            np.ndarray: Normalized data
+        """
+        if self.stats is None or self.normalize_mode is None:
+            return data
+            
+        if data_type not in self.stats:
+            print(f"Warning: No statistics found for {data_type}")
+            return data
+            
+        stats_data = self.stats[data_type]
+        
+        if self.normalize_mode == 'mean_std':
+            # Normalize using mean and standard deviation: (x - mean) / std
+            mean = np.array(stats_data['mean'])
+            std = np.array(stats_data['std'])
+            # Avoid division by zero
+            std = np.where(std == 0, 1, std)
+            normalized = (data - mean) / std
+            
+        elif self.normalize_mode == 'min_max':
+            # Normalize using percentiles as min/max: (x - min) / (max - min)
+            min_val = np.array(stats_data['percentile_1'])
+            max_val = np.array(stats_data['percentile_99'])
+            # Avoid division by zero
+            range_val = max_val - min_val
+            range_val = np.where(range_val == 0, 1, range_val)
+            normalized = (data - min_val) / range_val
+            
+        else:
+            print(f"Warning: Unknown normalization mode {self.normalize_mode}")
+            return data
+            
+        return normalized
+
+def collect_statistics(dataset: BsonVLADataset, num_samples=10000):
+    """
+    Collect statistics for state and action dimensions by iterating through episodes.
+    
+    Args:
+        dataset: BsonVLADataset instance
+        num_samples: Maximum number of samples to collect statistics from
+        
+    Returns:
+        dict: Statistics containing mean, std, 1st and 99th percentiles
+    """
+    print(f"Collecting statistics from episodes (target: {num_samples} samples)...")
+    
+    states = []
+    actions = []
+    total_samples = 0
+    
+    # Iterate through all episodes
+    for ep_idx in range(len(dataset)):
+        if total_samples >= num_samples:
+            break
+            
+        if ep_idx % 50 == 0:
+            print(f"Processing episode {ep_idx}/{len(dataset)}, collected {total_samples} samples")
+        
+        try:
+            # Get full trajectory for this episode
+            sample = dataset.get_item(index=ep_idx, state_only=True)
+            
+            if sample is None:
+                continue
+                
+            episode_states = sample['state']  # Shape: (traj_len, state_dim)
+            episode_actions = sample['action']  # Shape: (traj_len, action_dim)
+            
+            # Add all timesteps from this episode
+            for t in range(len(episode_states)):
+                if total_samples >= num_samples:
+                    break
+                    
+                states.append(episode_states[t])
+                actions.append(episode_actions[t])
+                total_samples += 1
+                
+        except Exception as e:
+            print(f"Error processing episode {ep_idx}: {e}")
+            continue
+    
+    if not states or not actions:
+        raise ValueError("No valid samples collected")
+    
+    # Convert to numpy arrays
+    states = np.array(states)  # Shape: (num_samples, state_dim)
+    actions = np.array(actions)  # Shape: (num_samples, action_dim)
+    
+    print(f"Collected {len(states)} valid samples from {ep_idx + 1} episodes")
+    print(f"State shape: {states.shape}")
+    print(f"Action shape: {actions.shape}")
+    
+    # Calculate statistics
+    stats = {
+        'state': {
+            'mean': np.mean(states, axis=0).tolist(),
+            'std': np.std(states, axis=0).tolist(),
+            'percentile_1': np.percentile(states, 1, axis=0).tolist(),
+            'percentile_99': np.percentile(states, 99, axis=0).tolist()
+        },
+        'action': {
+            'mean': np.mean(actions, axis=0).tolist(),
+            'std': np.std(actions, axis=0).tolist(),
+            'percentile_1': np.percentile(actions, 1, axis=0).tolist(),
+            'percentile_99': np.percentile(actions, 99, axis=0).tolist()
+        },
+        'metadata': {
+            'num_samples': len(states),
+            'state_dim': states.shape[1],
+            'action_dim': actions.shape[1],
+            'num_episodes_processed': ep_idx + 1,
+            'timestamp': datetime.now().isoformat()
+        }
+    }
+    
+    return stats, states, actions
+
+def plot_distributions(states, actions, output_dir="."):
+    """
+    Plot distribution histograms for state and action dimensions with statistics overlay.
+    
+    Args:
+        states: numpy array of states (num_samples, state_dim)
+        actions: numpy array of actions (num_samples, action_dim)
+        output_dir: Directory to save plots
+    """
+    print("Generating distribution plots with statistics...")
+    
+    # Calculate statistics for plotting
+    state_means = np.mean(states, axis=0)
+    state_stds = np.std(states, axis=0)
+    state_p1 = np.percentile(states, 1, axis=0)
+    state_p99 = np.percentile(states, 99, axis=0)
+    
+    action_means = np.mean(actions, axis=0)
+    action_stds = np.std(actions, axis=0)
+    action_p1 = np.percentile(actions, 1, axis=0)
+    action_p99 = np.percentile(actions, 99, axis=0)
+    
+    # Plot state distributions
+    state_dim = states.shape[1]
+    fig, axes = plt.subplots(6, 6, figsize=(24, 24))
+    fig.suptitle('State Dimensions Distribution with Statistics', fontsize=16)
+    
+    for i in range(min(36, state_dim)):
+        row = i // 6
+        col = i % 6
+        if row < 6 and col < 6:
+            ax = axes[row, col]
+            
+            # Plot histogram
+            ax.hist(states[:, i], bins=50, alpha=0.7, edgecolor='black', color='skyblue')
+            
+            # Add statistical lines
+            ax.axvline(state_means[i], color='red', linestyle='-', linewidth=2, label=f'Mean: {state_means[i]:.3f}')
+            ax.axvline(state_means[i] - state_stds[i], color='orange', linestyle='--', linewidth=1.5, label=f'Mean-Std: {state_means[i]-state_stds[i]:.3f}')
+            ax.axvline(state_means[i] + state_stds[i], color='orange', linestyle='--', linewidth=1.5, label=f'Mean+Std: {state_means[i]+state_stds[i]:.3f}')
+            ax.axvline(state_p1[i], color='green', linestyle=':', linewidth=1.5, label=f'P1: {state_p1[i]:.3f}')
+            ax.axvline(state_p99[i], color='green', linestyle=':', linewidth=1.5, label=f'P99: {state_p99[i]:.3f}')
+            
+            ax.set_title(f'State Dim {i}\nμ={state_means[i]:.3f}, σ={state_stds[i]:.3f}', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=6, loc='upper right')
+    
+    # Hide unused subplots
+    for i in range(state_dim, 36):
+        row = i // 6
+        col = i % 6
+        if row < 6 and col < 6:
+            axes[row, col].set_visible(False)
+    
+    plt.tight_layout()
+    state_plot_path = os.path.join(output_dir, 'state_distributions.png')
+    plt.savefig(state_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"State distribution plot saved to: {state_plot_path}")
+    
+    # Plot action distributions
+    action_dim = actions.shape[1]
+    fig, axes = plt.subplots(6, 6, figsize=(24, 24))
+    fig.suptitle('Action Dimensions Distribution with Statistics', fontsize=16)
+    
+    for i in range(min(36, action_dim)):
+        row = i // 6
+        col = i % 6
+        if row < 6 and col < 6:
+            ax = axes[row, col]
+            
+            # Plot histogram
+            ax.hist(actions[:, i], bins=50, alpha=0.7, edgecolor='black', color='lightcoral')
+            
+            # Add statistical lines
+            ax.axvline(action_means[i], color='red', linestyle='-', linewidth=2, label=f'Mean: {action_means[i]:.3f}')
+            ax.axvline(action_means[i] - action_stds[i], color='orange', linestyle='--', linewidth=1.5, label=f'Mean-Std: {action_means[i]-action_stds[i]:.3f}')
+            ax.axvline(action_means[i] + action_stds[i], color='orange', linestyle='--', linewidth=1.5, label=f'Mean+Std: {action_means[i]+action_stds[i]:.3f}')
+            ax.axvline(action_p1[i], color='green', linestyle=':', linewidth=1.5, label=f'P1: {action_p1[i]:.3f}')
+            ax.axvline(action_p99[i], color='green', linestyle=':', linewidth=1.5, label=f'P99: {action_p99[i]:.3f}')
+            
+            ax.set_title(f'Action Dim {i}\nμ={action_means[i]:.3f}, σ={action_stds[i]:.3f}', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=6, loc='upper right')
+    
+    # Hide unused subplots
+    for i in range(action_dim, 36):
+        row = i // 6
+        col = i % 6
+        if row < 6 and col < 6:
+            axes[row, col].set_visible(False)
+    
+    plt.tight_layout()
+    action_plot_path = os.path.join(output_dir, 'action_distributions.png')
+    plt.savefig(action_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Action distribution plot saved to: {action_plot_path}")
 
 if __name__ == "__main__":
-    # --- Example Usage ---
-    ds = BsonVLADataset()
+    parser = argparse.ArgumentParser(description='BSON VLA Dataset Testing and Statistics')
+    parser.add_argument('--stat', action='store_true', help='Collect statistics from 10k samples')
+    parser.add_argument('--num_samples', type=int, default=10000, help='Number of samples for statistics (default: 10000)')
+    parser.add_argument('--output_dir', type=str, default='bson_stats', help='Output directory for statistics and plots')
+    parser.add_argument('--normalize', choices=['mean_std', 'min_max'], help='Normalization mode')
+    parser.add_argument('--stats_file', type=str, help='Path to dataset_statistics.json for normalization')
     
-    if len(ds) > 0:
+    args = parser.parse_args()
+    
+    # --- Dataset Initialization ---
+    ds = BsonVLADataset(normalize_mode=args.normalize, stats_file=args.stats_file)
+    
+    if len(ds) == 0:
+        print("\nDataset initialized but contains no valid episodes.")
+        exit(1)
+    
+    if args.stat:
+        # Collect statistics
+        try:
+            stats, states, actions = collect_statistics(ds, args.num_samples)
+            
+            # Save statistics to JSON
+            os.makedirs(args.output_dir, exist_ok=True)
+            stats_file = os.path.join(args.output_dir, 'dataset_statistics.json')
+            with open(stats_file, 'w') as f:
+                json.dump(stats, f, indent=2)
+            print(f"\nStatistics saved to: {stats_file}")
+            
+            # Generate distribution plots
+            plot_distributions(states, actions, args.output_dir)
+            
+            # Print summary
+            print("\n=== Statistics Summary ===")
+            print(f"State dimensions: {stats['metadata']['state_dim']}")
+            print(f"Action dimensions: {stats['metadata']['action_dim']}")
+            print(f"Samples collected: {stats['metadata']['num_samples']}")
+            print(f"\nState statistics:")
+            print(f"  Mean range: [{np.min(stats['state']['mean']):.4f}, {np.max(stats['state']['mean']):.4f}]")
+            print(f"  Std range: [{np.min(stats['state']['std']):.4f}, {np.max(stats['state']['std']):.4f}]")
+            print(f"\nAction statistics:")
+            print(f"  Mean range: [{np.min(stats['action']['mean']):.4f}, {np.max(stats['action']['mean']):.4f}]")
+            print(f"  Std range: [{np.min(stats['action']['std']):.4f}, {np.max(stats['action']['std']):.4f}]")
+            
+        except Exception as e:
+            print(f"Error collecting statistics: {e}")
+            exit(1)
+    else:
+        # --- Example Usage ---
         print(f"\n--- Testing get_item (state_only=False) for one item ---")
         sample = ds.get_item()
         print("Sample keys:", sample.keys())
@@ -465,8 +943,10 @@ if __name__ == "__main__":
         print("State shape:", sample['state'].shape)
         print("Actions shape:", sample['actions'].shape)
         print("Cam High shape:", sample['cam_high'].shape)
-        for key, name in zip(ds.ext_image_keys, ds.ext_image_names):
-            print(f"Cam {name} shape:", sample[name].shape)
+        # Print camera info based on what's actually in the sample
+        camera_keys = [k for k in sample.keys() if k.startswith('cam_') and not k.endswith('_mask')]
+        for cam_key in camera_keys:
+            print(f"Cam {cam_key} shape:", sample[cam_key].shape)
         print("Cam masks:", sample['cam_high_mask'])
 
         print(f"\n--- Testing get_item (state_only=True) for one item ---")
@@ -474,5 +954,9 @@ if __name__ == "__main__":
         print("State sample keys:", state_sample.keys())
         print("Full state trajectory shape:", state_sample['state'].shape)
         print("Full action trajectory shape:", state_sample['action'].shape)
-    else:
-        print("\nDataset initialized but contains no valid episodes.")
+
+        print("First state:", state_sample['state'][0])
+
+        print("\n--- Testing get_item for 100 items ---")
+        for _ in range(100):
+            ds.get_item()

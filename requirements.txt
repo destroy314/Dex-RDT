@@ -9,3 +9,6 @@ sentencepiece==0.2.0
 h5py==3.11.0
 opencv-python==4.9.0.80
 imgaug==0.4.0
+numpy<2.0
+pymongo
+av

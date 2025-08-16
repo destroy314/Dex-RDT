@@ -17,7 +17,6 @@ except ImportError:
     print("pip install torch")
     print("pip install torchcodec")
     print("="*50)
-    raise
 
 class EgoDexVLADataset:
     """
@@ -195,7 +194,7 @@ class EgoDexVLADataset:
             print(f"Error reading or processing HDF5 file {hdf5_path}: {e}")
             return None
 
-    def _get_video_decoder(self, mp4_path: str) -> torchcodec.decoders.VideoDecoder:
+    def _get_video_decoder(self, mp4_path: str):
         """Decodes an MP4 video file using torchcodec, with caching."""
         if mp4_path in self._video_cache:
             return self._video_cache[mp4_path]

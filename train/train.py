@@ -31,6 +31,8 @@ from diffusers.utils import is_wandb_available
 from huggingface_hub import create_repo, upload_folder
 from tqdm.auto import tqdm
 from safetensors.torch import load_model
+import matplotlib.pyplot as plt
+import io
 
 from models.ema_model import EMAModel
 from models.multimodal_encoder.siglip_encoder import SiglipVisionTower
@@ -404,6 +406,28 @@ def train(args, logger):
             with accelerator.accumulate(rdt):
                 images = batch["images"].to(dtype=weight_dtype)
                 states = batch["states"].to(dtype=weight_dtype) # (B, T, D_a)
+                # ==================== 探针代码 ====================
+                # 如果到了探针周期（例如每 args.probe_period 步）并且是主进程，就可视化原始图像
+                if global_step % 2 == 0 and accelerator.is_local_main_process and False:
+                    # 只取 batch 中第一条样本的多视角图像序列
+                    sample_imgs = images[0]  # shape: (T, C, H, W)
+                    # 创建子图：一行 T 列
+                    fig, axes = plt.subplots(1, sample_imgs.shape[0], figsize=(sample_imgs.shape[0]*3, 3))
+                    for i, img in enumerate(sample_imgs):
+                        # CHW -> HWC and 转到 CPU
+                        axes[i].imshow((img.cpu().permute(1, 2, 0).float()+1)/2)
+                        axes[i].axis("off")
+                    # 保存到内存 buffer
+                    buf = io.BytesIO()
+                    fig.savefig(buf, format="jpg", bbox_inches="tight")
+                    buf.seek(0)
+                    # 根据不同的 logger 上传或写文件
+                    probe_dir = os.path.join(args.output_dir, "probe")
+                    os.makedirs(probe_dir, exist_ok=True)
+                    with open(os.path.join(probe_dir, f"input_{global_step}.jpg"), "wb") as f:
+                        f.write(buf.getvalue())
+                    plt.close(fig)
+                # ==================== 探针代码结束 ====================
                 # We only use the last state as input
                 states = states[:, -1:, :]
                 actions = batch["actions"].to(dtype=weight_dtype)
