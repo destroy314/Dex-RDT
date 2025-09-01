@@ -323,7 +323,7 @@ class VLAConsumerDataset(Dataset):
                 preprocessed_images = []
                 processor = self.image_processor
                 for image, valid in rearranged_images:
-                    image = Image.fromarray(image)
+                    image = Image.fromarray(image, mode='RGB')
                     if self.image_size is not None:
                         image = transforms.Resize(self.image_size)(image) # (1008, 336)
                     # assert image.height == 336, "We haven't prepare for training with images of different resolutions."
@@ -391,11 +391,11 @@ class VLAConsumerDataset(Dataset):
                 return data_dict
             except BaseException as e:
                 # Print the error info
-                if data_dict is not None:
-                    print(f"Error catched when processing sample from {data_dict.get('dataset_name')}:", e)
-                else:
-                    print(f"Error catched when processing sample:", e)
-                traceback.print_exc()
+                # if data_dict is not None:
+                #     print(f"Error catched when processing sample from {data_dict.get('dataset_name')}:", e)
+                # else:
+                #     print(f"Error catched when processing sample:", e)
+                # traceback.print_exc()
                 # Try incresing the index
                 index = (index + 1) % len(self)
                 # raise

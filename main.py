@@ -41,10 +41,10 @@ def parse_args(input_args=None):
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
 
     parser.add_argument(
-        "--load_from_hdf5",
+        "--load_from",
         type=str,
         default="hdf5",
-        choices=["hdf5", "bson", "egodex"],
+        choices=["hdf5", "bson", "egodex", "lerobot"],
         help=(
             "Type of dataset to load. "
         )

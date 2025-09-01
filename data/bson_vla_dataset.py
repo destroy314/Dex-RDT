@@ -14,6 +14,7 @@ import argparse
 import json
 import matplotlib.pyplot as plt
 from datetime import datetime
+import random
 
 class EpisodeInfo:
     """Custom class to store episode path and action text"""
@@ -35,9 +36,9 @@ class BsonVLADataset:
     - Separate xhand_control_data.bson for dexterous hand data
     - Image file sequences from multiple cameras
     """
-    def __init__(self, bson_dir: str="data/ours", sub_sample=1.0, 
+    def __init__(self, bson_dir: str="data/ours/true", sub_sample=1.0, 
                 #  normalize_mode: str=None, stats_file: str=None) -> None:
-                 normalize_mode: str="min_max", stats_file: str="bson_stats/dataset_statistics.json") -> None:
+                 normalize_mode: str="min_max", stats_file: str="v5_bson_stats/dataset_statistics.json") -> None:
         """
         Initializes the BsonVLADataset.
 
@@ -60,8 +61,13 @@ class BsonVLADataset:
         # 4 cameras: 0,4,6,11 (head, external, right_hand, left_hand)
         self.valid_3cam_config_1 = [0, 2, 6]  # left_hand, external, right_hand
         self.valid_3cam_config_2 = [2, 4, 6]  # left_hand, external, right_hand
-        self.valid_4cam_config = [0, 4, 6, 11]  # head, external, right_hand, left_hand
-        
+        self.valid_4cam_config_1 = [0, 4, 6, 11]  # head, external, right_hand, left_hand
+        self.valid_4cam_config_2 = [0, 6, 8, 12]  # head, left_hand, external, right_hand
+        self.valid_4cam_config_3 = [0, 9, 13, 15] # head, left_hand, external, right_hand
+        self.valid_4cam_config_4 = [0, 8, 10, 12] # head, left_hand, external, right_hand
+        self.valid_4cam_config_5 = [0, 14, 16, 18]# head, left_hand, external, right_hand
+
+
         # These will be set per episode based on actual camera configuration
         self.ext_image_keys = []
         self.ext_image_names = []
@@ -172,12 +178,13 @@ class BsonVLADataset:
                     cam_num = int(item.split('_')[1])
                     camera_dirs.append(cam_num)
                 except ValueError:
+                    print(f"Invalid camera directory: {item}")
                     continue
         
         camera_dirs.sort()
         
         # Validate against known configurations
-        if camera_dirs == self.valid_3cam_config_1:
+        if camera_dirs == self.valid_3cam_config_1 or camera_dirs == self.valid_3cam_config_2:
             # 3 cameras: 0,2,6 (left_hand, external, right_hand)
             return {
                 'type': '3cam',
@@ -186,22 +193,22 @@ class BsonVLADataset:
                 'ext_image_names': ['cam_left_wrist', 'cam_third_view', 'cam_right_wrist'],
                 'has_head_in_bson': True
             }
-        elif camera_dirs == self.valid_3cam_config_2:
-            # 3 cameras: 2,4,6 (left_hand, external, right_hand)
-            return {
-                'type': '3cam',
-                'cameras': camera_dirs,
-                'ext_image_keys': [f'camera_{i}' for i in camera_dirs],
-                'ext_image_names': ['cam_left_wrist', 'cam_third_view', 'cam_right_wrist'],
-                'has_head_in_bson': True
-            }
-        elif camera_dirs == self.valid_4cam_config:
+        elif camera_dirs == self.valid_4cam_config_1:
             # 4 cameras: 0,4,6,11 (head, external, right_hand, left_hand)
             return {
                 'type': '4cam',
                 'cameras': camera_dirs,
                 'ext_image_keys': [f'camera_{i}' for i in camera_dirs],
                 'ext_image_names': ['cam_head', 'cam_third_view', 'cam_right_wrist', 'cam_left_wrist'],
+                'has_head_in_bson': False
+            }
+        elif camera_dirs == self.valid_4cam_config_2 or camera_dirs == self.valid_4cam_config_3 or camera_dirs == self.valid_4cam_config_4 or camera_dirs == self.valid_4cam_config_5:
+            # 4 cameras: 0,6,8,12 (head, left_hand, external, right_hand)
+            return {
+                'type': '4cam',
+                'cameras': camera_dirs,
+                'ext_image_keys': [f'camera_{i}' for i in camera_dirs],
+                'ext_image_names': ['cam_head', 'cam_left_wrist', 'cam_third_view', 'cam_right_wrist'],
                 'has_head_in_bson': False
             }
         else:
@@ -309,7 +316,7 @@ class BsonVLADataset:
                 # print(f"Warning: Action data has incorrect length (left: {len(left_arm_action)}, right: {len(right_arm_action)}), using observation as action")
         except (KeyError, IndexError):
             use_arm_actions = False
-            # print("Warning: Action data not available, using observation as action")
+            print(f"Warning: Action data not available in episode {episode_info.path}, using observation as action")
         
         for i in range(frame_num):
             state[i, :] = np.concatenate([
@@ -716,43 +723,42 @@ def collect_statistics(dataset: BsonVLADataset, num_samples=10000):
     Returns:
         dict: Statistics containing mean, std, 1st and 99th percentiles
     """
-    print(f"Collecting statistics from episodes (target: {num_samples} samples)...")
+    print(f"Collecting statistics from {len(dataset)} episodes (target: {num_samples} samples)...")
     
     states = []
     actions = []
     total_samples = 0
     
     # Iterate through all episodes
-    for ep_idx in range(len(dataset)):
+    episode_indices = list(range(len(dataset)))
+    random.shuffle(episode_indices)
+    for ep_idx in episode_indices:
         if total_samples >= num_samples:
             break
             
         if ep_idx % 50 == 0:
-            print(f"Processing episode {ep_idx}/{len(dataset)}, collected {total_samples} samples")
+            print(f"Processing episode {episode_indices.index(ep_idx)}/{len(dataset)}, collected {total_samples} samples")
         
-        try:
-            # Get full trajectory for this episode
-            sample = dataset.get_item(index=ep_idx, state_only=True)
-            
-            if sample is None:
-                continue
-                
-            episode_states = sample['state']  # Shape: (traj_len, state_dim)
-            episode_actions = sample['action']  # Shape: (traj_len, action_dim)
-            
-            # Add all timesteps from this episode
-            for t in range(len(episode_states)):
-                if total_samples >= num_samples:
-                    break
-                    
-                states.append(episode_states[t])
-                actions.append(episode_actions[t])
-                total_samples += 1
-                
-        except Exception as e:
-            print(f"Error processing episode {ep_idx}: {e}")
+        # Get full trajectory for this episode
+        sample = dataset.get_item(index=ep_idx, state_only=True)
+        
+        if sample is None:
+            print(f"Episode {ep_idx} is invalid, skipping...")
             continue
-    
+            
+        episode_states = sample['state']  # Shape: (traj_len, state_dim)
+        episode_actions = sample['action']  # Shape: (traj_len, action_dim)
+        # print(f"Episode {ep_idx} has {len(episode_states)} timesteps.")
+        
+        # Add all timesteps from this episode
+        for t in range(len(episode_states)):
+            if total_samples >= num_samples:
+                break
+                
+            states.append(episode_states[t])
+            actions.append(episode_actions[t])
+            total_samples += 1
+                
     if not states or not actions:
         raise ValueError("No valid samples collected")
     
@@ -760,7 +766,7 @@ def collect_statistics(dataset: BsonVLADataset, num_samples=10000):
     states = np.array(states)  # Shape: (num_samples, state_dim)
     actions = np.array(actions)  # Shape: (num_samples, action_dim)
     
-    print(f"Collected {len(states)} valid samples from {ep_idx + 1} episodes")
+    print(f"Collected {len(states)} valid samples from {episode_indices.index(ep_idx) + 1} episodes")
     print(f"State shape: {states.shape}")
     print(f"Action shape: {actions.shape}")
     
@@ -905,35 +911,30 @@ if __name__ == "__main__":
         exit(1)
     
     if args.stat:
-        # Collect statistics
-        try:
-            stats, states, actions = collect_statistics(ds, args.num_samples)
+        stats, states, actions = collect_statistics(ds, args.num_samples)
+        
+        # Save statistics to JSON
+        os.makedirs(args.output_dir, exist_ok=True)
+        stats_file = os.path.join(args.output_dir, 'dataset_statistics.json')
+        with open(stats_file, 'w') as f:
+            json.dump(stats, f, indent=2)
+        print(f"\nStatistics saved to: {stats_file}")
+        
+        # Generate distribution plots
+        plot_distributions(states, actions, args.output_dir)
+        
+        # Print summary
+        print("\n=== Statistics Summary ===")
+        print(f"State dimensions: {stats['metadata']['state_dim']}")
+        print(f"Action dimensions: {stats['metadata']['action_dim']}")
+        print(f"Samples collected: {stats['metadata']['num_samples']}")
+        print(f"\nState statistics:")
+        print(f"  Mean range: [{np.min(stats['state']['mean']):.4f}, {np.max(stats['state']['mean']):.4f}]")
+        print(f"  Std range: [{np.min(stats['state']['std']):.4f}, {np.max(stats['state']['std']):.4f}]")
+        print(f"\nAction statistics:")
+        print(f"  Mean range: [{np.min(stats['action']['mean']):.4f}, {np.max(stats['action']['mean']):.4f}]")
+        print(f"  Std range: [{np.min(stats['action']['std']):.4f}, {np.max(stats['action']['std']):.4f}]")
             
-            # Save statistics to JSON
-            os.makedirs(args.output_dir, exist_ok=True)
-            stats_file = os.path.join(args.output_dir, 'dataset_statistics.json')
-            with open(stats_file, 'w') as f:
-                json.dump(stats, f, indent=2)
-            print(f"\nStatistics saved to: {stats_file}")
-            
-            # Generate distribution plots
-            plot_distributions(states, actions, args.output_dir)
-            
-            # Print summary
-            print("\n=== Statistics Summary ===")
-            print(f"State dimensions: {stats['metadata']['state_dim']}")
-            print(f"Action dimensions: {stats['metadata']['action_dim']}")
-            print(f"Samples collected: {stats['metadata']['num_samples']}")
-            print(f"\nState statistics:")
-            print(f"  Mean range: [{np.min(stats['state']['mean']):.4f}, {np.max(stats['state']['mean']):.4f}]")
-            print(f"  Std range: [{np.min(stats['state']['std']):.4f}, {np.max(stats['state']['std']):.4f}]")
-            print(f"\nAction statistics:")
-            print(f"  Mean range: [{np.min(stats['action']['mean']):.4f}, {np.max(stats['action']['mean']):.4f}]")
-            print(f"  Std range: [{np.min(stats['action']['std']):.4f}, {np.max(stats['action']['std']):.4f}]")
-            
-        except Exception as e:
-            print(f"Error collecting statistics: {e}")
-            exit(1)
     else:
         # --- Example Usage ---
         print(f"\n--- Testing get_item (state_only=False) for one item ---")
@@ -941,6 +942,8 @@ if __name__ == "__main__":
         print("Sample keys:", sample.keys())
         print("Meta:", sample['meta'])
         print("State shape:", sample['state'].shape)
+        print("State indicator shape:", sample['state_indicator'].shape)
+        print("State mean shape:", sample['state_mean'].shape)
         print("Actions shape:", sample['actions'].shape)
         print("Cam High shape:", sample['cam_high'].shape)
         # Print camera info based on what's actually in the sample

@@ -14,7 +14,7 @@ export NCCL_IB_DISABLE=1
 
 export TEXT_ENCODER_NAME="google/t5-v1_1-xxl"
 export VISION_ENCODER_NAME="google/siglip-so400m-patch14-384"
-export OUTPUT_DIR="./checkpoints/dexrdt-400m-v3"
+export OUTPUT_DIR="./checkpoints/dexrdt-400m-v5"
 # export OUTPUT_DIR="./checkpoints/debug"
 export CFLAGS="-I/usr/include"
 export LDFLAGS="-L/usr/lib/x86_64-linux-gnu"
@@ -23,7 +23,7 @@ export CUTLASS_PATH="cutlass"
 export WANDB_PROJECT="dex-rdt"
 export WANDB_MODE=offline
 # export CUDA_VISIBLE_DEVICES=4,5,6,7
-# export CUDA_VISIBLE_DEVICES=6
+# export CUDA_VISIBLE_DEVICES=6,7
 
 if [ ! -d "$OUTPUT_DIR" ]; then
     mkdir "$OUTPUT_DIR"
@@ -37,6 +37,7 @@ fi
 #     --deepspeed="./configs/zero2.json" \
 #     ...
 
+    # --pretrained_model_name_or_path="checkpoints/dexrdt-400m-v3/checkpoint-95000" \
 # deepspeed --hostfile=hostfile.txt main.py \
 accelerate launch main.py \
     --deepspeed="./configs/zero2.json" \
@@ -57,10 +58,10 @@ accelerate launch main.py \
     --image_aug \
     --dataset_type="finetune" \
     --state_noise_snr=40 \
-    --load_from_hdf5="bson" \
+    --load_from="bson" \
     --report_to=wandb
 
-    # --resume_from_checkpoint="checkpoint-30000" \
+    # --resume_from_checkpoint="checkpoint-45000" \
     # Use this to resume training from some previous checkpoint
     # --resume_from_checkpoint="checkpoint-36000" \
     # Use this to load from saved lanuage instruction embeddings,

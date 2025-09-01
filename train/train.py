@@ -250,7 +250,7 @@ def train(args, logger):
         cond_mask_prob=args.cond_mask_prob,
         cam_ext_mask_prob=args.cam_ext_mask_prob,
         state_noise_snr=args.state_noise_snr,
-        use_hdf5=args.load_from_hdf5,
+        use_hdf5=args.load_from,
         use_precomp_lang_embed=args.precomp_lang_embed,
     )
     sample_dataset = VLAConsumerDataset(
@@ -264,7 +264,7 @@ def train(args, logger):
         cond_mask_prob=0,
         cam_ext_mask_prob=-1,
         state_noise_snr=None,
-        use_hdf5=args.load_from_hdf5,
+        use_hdf5=args.load_from,
         use_precomp_lang_embed=args.precomp_lang_embed,
     )                              
     
@@ -481,17 +481,18 @@ def train(args, logger):
                     logger.info(f"Saved state to {save_path}")
 
                 if args.sample_period > 0 and global_step % args.sample_period == 0:
-                    sample_loss_for_log = log_sample_res(
-                        text_encoder,
-                        vision_encoder,
-                        rdt,    # We do not use EMA currently
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        sample_dataset.get_dataset_id2name(),
-                        sample_dataloader,
-                        logger,
-                    )
+                    with torch.cuda.amp.autocast(enabled=True):
+                        sample_loss_for_log = log_sample_res(
+                            text_encoder,
+                            vision_encoder,
+                            rdt,    # We do not use EMA currently
+                            args,
+                            accelerator,
+                            weight_dtype,
+                            sample_dataset.get_dataset_id2name(),
+                            sample_dataloader,
+                            logger,
+                        )
                     logger.info(sample_loss_for_log)
                     accelerator.log(sample_loss_for_log, step=global_step)
 

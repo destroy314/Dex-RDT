@@ -70,6 +70,9 @@ def main(bson_file_path: Path) -> None:
     print(f"Parsing BSON file: {bson_file_path}\n")
     try:
         bson_data = load_bson_file(bson_file_path)
+        print(bson_data['data']["/observation/left_arm/joint_state"][0]["data"]["pos"])
+        print(bson_data['data']["/observation/right_arm/joint_state"][0]["data"]["pos"])
+        exit()
         print_bson_structure(bson_data)
     except Exception as e:
         print(f"An error occurred while parsing the BSON file: {e}")
